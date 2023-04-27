@@ -1,19 +1,33 @@
-use clap::Parser;
-use clap_derive::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use nom::{
     bytes::complete::{tag, take},
-    multi::separated_list1,
-    sequence::{delimited, separated_pair, terminated},
+    sequence::{separated_pair, terminated},
     IResult,
 };
 use std::{error::Error, fmt::Display};
 use tokio::{io::BufReader, net::TcpStream};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Args)]
 pub struct Color {
     r: u8,
     g: u8,
     b: u8,
+}
+
+#[derive(Debug, Args)]
+pub struct Pixel {
+    x: u16,
+    y: u16,
+    color: String,
+}
+
+#[derive(Debug, Args)]
+pub struct Rect {
+    start_x: u16,
+    start_y: u16,
+    end_x: u16,
+    end_y: u16,
+    color: String,
 }
 
 #[derive(Debug)]
@@ -24,7 +38,7 @@ pub enum Cmd {
 }
 
 #[derive(Parser, Debug)]
-pub struct Args {
+pub struct Arguments {
     #[command(subcommand)]
     command: Command,
 
@@ -34,53 +48,87 @@ pub struct Args {
 
     /// how many threads should be used
     #[arg(short, long)]
-    threads: Option<i8>,
+    threads: usize,
 
-    /// size limit of the tcp packets
     #[arg(short, long)]
-    size: Option<i16>,
+    loops: Option<bool>,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    Pixel {
-        x: i16,
-        y: i16,
-        color: String,
-    },
-    Rect {
-        start_x: i16,
-        start_y: i16,
-        end_x: i16,
-        end_y: i16,
-        color: String,
-    },
+    Howto,
+    Pixel(Pixel),
+    Rect(Rect),
     Size,
     //Image,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    println!("Hello, world!");
-    let args = Args::parse();
+    let args = Arguments::parse();
 
-    let mut streams = vec![BufReader::new(TcpStream::connect(&args.domain).await?)];
+    let mut streams = vec![];
+    for _ in 0..args.threads {
+        streams.push(BufReader::new(TcpStream::connect(&args.domain).await?));
+    }
 
     match args.command {
-        Command::Pixel { x, y, color } => todo!(),
-        Command::Rect {
-            start_x,
-            start_y,
-            end_x,
-            end_y,
-            color,
-        } => todo!(),
+        Command::Howto => howto(&mut streams[0]).await?,
+        Command::Pixel(pxl) => pixel(&mut streams[0], pxl).await?,
+        Command::Rect(rct) => rect(args.loops.unwrap_or(false), &mut streams[0], rct).await?,
         Command::Size => {
-            let size = size(&mut streams[0]).await;
+            let size = size(&mut streams[0]).await?;
             println!("{size:?}");
         }
     };
 
+    Ok(())
+}
+
+async fn pixel(stream: &mut BufReader<TcpStream>, pxl: Pixel) -> Result<(), Box<dyn Error>> {
+    use tokio::io::AsyncWriteExt;
+
+    let s = format!("PX {} {} {}\n", pxl.x, pxl.y, pxl.color);
+    stream.write_all(s.as_bytes()).await?;
+    Ok(())
+}
+
+async fn rect(
+    loops: bool,
+    stream: &mut BufReader<TcpStream>,
+    rect: Rect,
+) -> Result<(), Box<dyn Error>> {
+    use tokio::io::AsyncWriteExt;
+
+    while loops {
+        let pixel = String::from("PX ");
+        for x in rect.start_x..rect.end_x {
+            for y in rect.start_y..rect.end_y {
+                let mut s = pixel.clone();
+                s.push_str(&x.to_string());
+                s.push(' ');
+                s.push_str(&y.to_string());
+                s.push(' ');
+                s.push_str(&rect.color);
+                s.push('\n');
+                stream.write(s.as_bytes()).await?;
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn howto(stream: &mut BufReader<TcpStream>) -> Result<(), Box<dyn Error>> {
+    use tokio::io::AsyncBufReadExt;
+    use tokio::io::AsyncWriteExt;
+
+    // send HELP
+    stream.write_all(b"HELP\n").await?;
+
+    // receive
+    let mut buffer = String::with_capacity(256);
+    stream.read_line(&mut buffer).await?;
+    println!("{buffer:?}");
     Ok(())
 }
 
@@ -90,7 +138,7 @@ async fn size(stream: &mut BufReader<TcpStream>) -> Result<(i32, i32), Box<dyn E
     use tokio::io::AsyncWriteExt;
 
     // send SIZE
-    stream.write_all(b"SIZE\n\n").await?;
+    stream.write_all(b"SIZE\n").await?;
 
     // receive
     let mut buffer = String::with_capacity(32);
@@ -119,9 +167,9 @@ impl Display for Color {
 impl Display for Cmd {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Cmd::Help => write!(f, "HELP"),
-            Cmd::Px { x, y, c } => write!(f, "PX {x} {y} {c}"),
-            Cmd::Size => todo!(),
+            Cmd::Help => write!(f, "HELP\n"),
+            Cmd::Px { x, y, c } => write!(f, "PX {x} {y} {c} \n"),
+            Cmd::Size => write!(f, "SIZE\n"),
         }
     }
 }

@@ -7,6 +7,5 @@ edition = "2021"
 
 [dependencies]
 tokio = { version= "1.27.0", features = ["full"] }
-clap = "4.2.4"
-clap_derive = "4.2.0"
+clap = { version = "4.2.4", features = ["derive"] }
 nom = "7.1.3"
