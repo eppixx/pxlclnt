@@ -4,7 +4,7 @@ use nom::{
     sequence::{separated_pair, terminated},
     IResult,
 };
-use std::{error::Error, fmt::Display};
+use std::{error::Error, fmt::Display, path::PathBuf};
 use tokio::{io::BufReader, net::TcpStream};
 
 #[derive(Debug, Args)]
@@ -54,13 +54,20 @@ pub struct Arguments {
     loops: Option<bool>,
 }
 
+#[derive(Debug, Args)]
+pub struct Image {
+    x: u16,
+    y: u16,
+    path: PathBuf,
+}
+
 #[derive(Subcommand, Debug)]
 pub enum Command {
     Howto,
     Pixel(Pixel),
     Rect(Rect),
     Size,
-    //Image,
+    Image(Image),
 }
 
 #[tokio::main]
@@ -80,7 +87,35 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let size = size(&mut streams[0]).await?;
             println!("{size:?}");
         }
+        Command::Image(img) => image(args.loops.unwrap_or(false), &mut streams[0], img).await?,
     };
+
+    Ok(())
+}
+
+async fn image(
+    loops: bool,
+    mut stream: &mut BufReader<TcpStream>,
+    img: Image,
+) -> Result<(), Box<dyn Error>> {
+    let canvas_limit = size(&mut stream).await?;
+
+    let image = image::open(img.path)?.to_rgb8();
+    while loops {
+        for pxl in image.enumerate_pixels() {
+            if pxl.0 < canvas_limit.0 && pxl.1 < canvas_limit.1 {
+                let pxl = Pixel {
+                    x: pxl.0 as u16,
+                    y: pxl.1 as u16,
+                    color: format!(
+                        "{:02x?}{:02x?}{:02x?}",
+                        pxl.2 .0[0], pxl.2 .0[1], pxl.2 .0[2]
+                    ),
+                };
+                pixel(&mut stream, pxl).await?;
+            }
+        }
+    }
 
     Ok(())
 }
@@ -133,7 +168,7 @@ async fn howto(stream: &mut BufReader<TcpStream>) -> Result<(), Box<dyn Error>> 
 }
 
 /// query the size of the pixelflut server canvas
-async fn size(stream: &mut BufReader<TcpStream>) -> Result<(i32, i32), Box<dyn Error>> {
+async fn size(stream: &mut BufReader<TcpStream>) -> Result<(u32, u32), Box<dyn Error>> {
     use tokio::io::AsyncBufReadExt;
     use tokio::io::AsyncWriteExt;
 
@@ -144,12 +179,12 @@ async fn size(stream: &mut BufReader<TcpStream>) -> Result<(i32, i32), Box<dyn E
     let mut buffer = String::with_capacity(32);
     stream.read_line(&mut buffer).await?;
 
-    fn parse(input: &str) -> IResult<&str, (i32, i32)> {
+    fn parse(input: &str) -> IResult<&str, (u32, u32)> {
         let (rest, _) = take(5u8)(input)?;
         let (rest, parsed) = separated_pair(
-            nom::character::complete::i32,
+            nom::character::complete::u32,
             tag(" "),
-            terminated(nom::character::complete::i32, tag("\r\n")),
+            terminated(nom::character::complete::u32, tag("\r\n")),
         )(rest)?;
         Ok((rest, parsed))
     }
