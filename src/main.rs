@@ -4,17 +4,10 @@ use nom::{
     sequence::{separated_pair, terminated},
     IResult,
 };
-use std::{error::Error, fmt::Display, path::PathBuf};
+use std::{error::Error, path::PathBuf};
 use tokio::{io::BufReader, net::TcpStream};
 
-#[derive(Debug, Args)]
-pub struct Color {
-    r: u8,
-    g: u8,
-    b: u8,
-}
-
-#[derive(Debug, Args)]
+#[derive(Debug, Clone, Args)]
 pub struct Pixel {
     x: u16,
     y: u16,
@@ -30,13 +23,6 @@ pub struct Rect {
     color: String,
 }
 
-#[derive(Debug)]
-pub enum Cmd {
-    Help,
-    Px { x: u32, y: u32, c: Color },
-    Size,
-}
-
 #[derive(Parser, Debug)]
 pub struct Arguments {
     #[command(subcommand)]
@@ -46,12 +32,12 @@ pub struct Arguments {
     #[arg(short, long)]
     domain: String,
 
-    /// how many threads should be used
+    // /// how many threads should be used
+    // #[arg(short, long)]
+    // threads: usize,
+    /// should the programm loop indefinetly
     #[arg(short, long)]
-    threads: usize,
-
-    #[arg(short, long)]
-    loops: Option<bool>,
+    loops: bool,
 }
 
 #[derive(Debug, Args)]
@@ -75,19 +61,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let args = Arguments::parse();
 
     let mut streams = vec![];
-    for _ in 0..args.threads {
+    for _ in 0..1 {
+        //TODO based on number of threads
         streams.push(BufReader::new(TcpStream::connect(&args.domain).await?));
     }
 
     match args.command {
         Command::Howto => howto(&mut streams[0]).await?,
-        Command::Pixel(pxl) => pixel(&mut streams[0], pxl).await?,
-        Command::Rect(rct) => rect(args.loops.unwrap_or(false), &mut streams[0], rct).await?,
+        Command::Pixel(pxl) => pixel(&mut streams[0], &pxl).await?,
+        Command::Rect(rct) => rect(args.loops, &mut streams[0], rct).await?,
         Command::Size => {
             let size = size(&mut streams[0]).await?;
             println!("{size:?}");
         }
-        Command::Image(img) => image(args.loops.unwrap_or(false), &mut streams[0], img).await?,
+        Command::Image(img) => image(args.loops, &mut streams, img).await?,
     };
 
     Ok(())
@@ -95,12 +82,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 async fn image(
     loops: bool,
-    mut stream: &mut BufReader<TcpStream>,
+    stream: &mut [BufReader<TcpStream>],
     img: Image,
 ) -> Result<(), Box<dyn Error>> {
-    let canvas_limit = size(&mut stream).await?;
-
     let image = image::open(img.path)?.to_rgb8();
+    let canvas_limit = size(&mut stream[0]).await?;
+    if image.width() > canvas_limit.0 || image.height() > canvas_limit.1 {
+        println!("WARN: the image is over the canvas size");
+    }
+
     while loops {
         for pxl in image.enumerate_pixels() {
             if pxl.0 < canvas_limit.0 && pxl.1 < canvas_limit.1 {
@@ -112,7 +102,7 @@ async fn image(
                         pxl.2 .0[0], pxl.2 .0[1], pxl.2 .0[2]
                     ),
                 };
-                pixel(&mut stream, pxl).await?;
+                pixel(&mut stream[0], &pxl).await?;
             }
         }
     }
@@ -120,11 +110,12 @@ async fn image(
     Ok(())
 }
 
-async fn pixel(stream: &mut BufReader<TcpStream>, pxl: Pixel) -> Result<(), Box<dyn Error>> {
+async fn pixel(stream: &mut BufReader<TcpStream>, pxl: &Pixel) -> Result<(), Box<dyn Error>> {
     use tokio::io::AsyncWriteExt;
 
     let s = format!("PX {} {} {}\n", pxl.x, pxl.y, pxl.color);
     stream.write_all(s.as_bytes()).await?;
+    // println!("{s}");
     Ok(())
 }
 
@@ -146,7 +137,7 @@ async fn rect(
                 s.push(' ');
                 s.push_str(&rect.color);
                 s.push('\n');
-                stream.write(s.as_bytes()).await?;
+                stream.write_all(s.as_bytes()).await?;
             }
         }
     }
@@ -191,20 +182,4 @@ async fn size(stream: &mut BufReader<TcpStream>) -> Result<(u32, u32), Box<dyn E
 
     let size = parse(&buffer).unwrap().1;
     Ok(size)
-}
-
-impl Display for Color {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:02x?}{:02x?}{:02x?}", self.r, self.g, self.b)
-    }
-}
-
-impl Display for Cmd {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Cmd::Help => write!(f, "HELP\n"),
-            Cmd::Px { x, y, c } => write!(f, "PX {x} {y} {c} \n"),
-            Cmd::Size => write!(f, "SIZE\n"),
-        }
-    }
 }
