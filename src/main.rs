@@ -9,7 +9,7 @@ use std::{
     path::PathBuf,
     sync::{Arc, RwLock},
 };
-use tokio::{io::BufReader, net::TcpStream};
+use tokio::{io::AsyncBufReadExt, io::AsyncWriteExt, io::BufReader, net::TcpStream};
 
 #[derive(Debug, Clone, Args)]
 pub struct Pixel {
@@ -73,7 +73,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
         Command::Pixel(pxl) => {
             let mut stream = BufReader::new(TcpStream::connect(&args.domain).await?);
-            pixel(&mut stream, &pxl).await?;
+            pixel(&mut stream, &pxl.to_cmd()).await?;
         }
         Command::Rect(ref rct) => rect(&args, rct).await?,
         Command::Image(ref img) => image(&args, img).await?,
@@ -103,19 +103,19 @@ async fn image(args: &Arguments, img: &Image) -> Result<(), Box<dyn Error>> {
         .collect();
 
     // divide pixels for threads
-    let tasks: Arc<RwLock<Vec<Vec<Pixel>>>> = Arc::new(RwLock::new(vec![]));
+    let tasks: Arc<RwLock<Vec<Vec<String>>>> = Arc::new(RwLock::new(vec![]));
     let span = all_pixels.len() / args.threads;
     for i in 0..args.threads {
         let pxls = &all_pixels[(span * i)..(span * (i + 1))];
-        let pxls: Vec<Pixel> = pxls
+        let pxls: Vec<String> = pxls
             .iter()
             .filter(|pxl| pxl.x < canvas_limit.0 && pxl.y < canvas_limit.1)
-            .cloned()
+            .map(|pxl| pxl.to_cmd())
             .collect();
         tasks.write().unwrap().push(pxls);
     }
 
-    async fn work(loops: bool, task: &Vec<Pixel>) {
+    async fn work(loops: bool, task: &Vec<String>) {
         let mut stream = BufReader::new(TcpStream::connect("localhost:1337").await.unwrap());
         while loops {
             for pxl in task {
@@ -150,32 +150,20 @@ async fn image(args: &Arguments, img: &Image) -> Result<(), Box<dyn Error>> {
 
 /// renders a single pixel
 #[inline(always)]
-async fn pixel(stream: &mut BufReader<TcpStream>, pxl: &Pixel) -> Result<(), Box<dyn Error>> {
-    use tokio::io::AsyncWriteExt;
-
-    // pushing to String is slightly faster that format!()
-    let mut s = String::with_capacity(32);
-    s.push_str("PX ");
-    s.push_str(&pxl.x.to_string());
-    s.push(' ');
-    s.push_str(&pxl.y.to_string());
-    s.push(' ');
-    s.push_str(&pxl.color);
-    s.push('\n');
-    stream.write_all(s.as_bytes()).await?;
+async fn pixel(stream: &mut BufReader<TcpStream>, cmd: &str) -> Result<(), Box<dyn Error>> {
+    stream.write_all(cmd.as_bytes()).await?;
     Ok(())
 }
 
 /// renders a simple rect single threaded
 async fn rect(args: &Arguments, rect: &Rect) -> Result<(), Box<dyn Error>> {
-    use tokio::io::AsyncWriteExt;
-
     let mut stream = BufReader::new(TcpStream::connect(&args.domain).await?);
 
     while args.loops {
         let pixel = String::from("PX ");
         for x in rect.start_x..rect.end_x {
             for y in rect.start_y..rect.end_y {
+                // appending on string is slightly faster than format!()
                 let mut s = pixel.clone();
                 s.push_str(&x.to_string());
                 s.push(' ');
@@ -192,9 +180,6 @@ async fn rect(args: &Arguments, rect: &Rect) -> Result<(), Box<dyn Error>> {
 
 /// prints the HELP command to the pixelflut server
 async fn howto(args: &Arguments) -> Result<(), Box<dyn Error>> {
-    use tokio::io::AsyncBufReadExt;
-    use tokio::io::AsyncWriteExt;
-
     let mut stream = BufReader::new(TcpStream::connect(&args.domain).await?);
 
     // send HELP
@@ -209,9 +194,6 @@ async fn howto(args: &Arguments) -> Result<(), Box<dyn Error>> {
 
 /// query the size of the pixelflut server canvas
 async fn size(args: &Arguments) -> Result<(u32, u32), Box<dyn Error>> {
-    use tokio::io::AsyncBufReadExt;
-    use tokio::io::AsyncWriteExt;
-
     let mut stream = BufReader::new(TcpStream::connect(&args.domain).await?);
 
     // send SIZE
@@ -233,4 +215,10 @@ async fn size(args: &Arguments) -> Result<(u32, u32), Box<dyn Error>> {
 
     let size = parse(&buffer).unwrap().1;
     Ok(size)
+}
+
+impl Pixel {
+    pub fn to_cmd(&self) -> String {
+        format!("PX {} {} {}\n", self.x, self.y, self.color)
+    }
 }
