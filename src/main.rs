@@ -4,26 +4,37 @@ use nom::{
     sequence::{separated_pair, terminated},
     IResult,
 };
-use std::{error::Error, path::PathBuf};
+use std::{
+    error::Error,
+    path::PathBuf,
+    sync::{Arc, RwLock},
+};
 use tokio::{io::BufReader, net::TcpStream};
 
 #[derive(Debug, Clone, Args)]
 pub struct Pixel {
-    x: u16,
-    y: u16,
+    x: u32,
+    y: u32,
     color: String,
 }
 
-#[derive(Debug, Args)]
+#[derive(Debug, Clone, Args)]
 pub struct Rect {
-    start_x: u16,
-    start_y: u16,
-    end_x: u16,
-    end_y: u16,
+    start_x: u32,
+    start_y: u32,
+    end_x: u32,
+    end_y: u32,
     color: String,
 }
 
-#[derive(Parser, Debug)]
+#[derive(Debug, Clone, Args)]
+pub struct Image {
+    x: u32,
+    y: u32,
+    path: PathBuf,
+}
+
+#[derive(Parser, Clone, Debug)]
 pub struct Arguments {
     #[command(subcommand)]
     command: Command,
@@ -32,27 +43,21 @@ pub struct Arguments {
     #[arg(short, long)]
     domain: String,
 
-    // /// how many threads should be used
-    // #[arg(short, long)]
-    // threads: usize,
+    /// how many threads should be used
+    #[arg(short, long)]
+    threads: usize,
+
     /// should the programm loop indefinetly
     #[arg(short, long)]
     loops: bool,
 }
 
-#[derive(Debug, Args)]
-pub struct Image {
-    x: u16,
-    y: u16,
-    path: PathBuf,
-}
-
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand, Clone, Debug)]
 pub enum Command {
     Howto,
+    Size,
     Pixel(Pixel),
     Rect(Rect),
-    Size,
     Image(Image),
 }
 
@@ -60,51 +65,84 @@ pub enum Command {
 async fn main() -> Result<(), Box<dyn Error>> {
     let args = Arguments::parse();
 
-    let mut streams = vec![];
-    for _ in 0..1 {
-        //TODO based on number of threads
-        streams.push(BufReader::new(TcpStream::connect(&args.domain).await?));
-    }
-
     match args.command {
-        Command::Howto => howto(&mut streams[0]).await?,
-        Command::Pixel(pxl) => pixel(&mut streams[0], &pxl).await?,
-        Command::Rect(rct) => rect(args.loops, &mut streams[0], rct).await?,
+        Command::Howto => howto(&args).await?,
         Command::Size => {
-            let size = size(&mut streams[0]).await?;
+            let size = size(&args).await?;
             println!("{size:?}");
         }
-        Command::Image(img) => image(args.loops, &mut streams, img).await?,
+        Command::Pixel(pxl) => {
+            let mut stream = BufReader::new(TcpStream::connect(&args.domain).await?);
+            pixel(&mut stream, &pxl).await?;
+        }
+        Command::Rect(ref rct) => rect(&args, rct).await?,
+        Command::Image(ref img) => image(&args, img).await?,
     };
 
     Ok(())
 }
 
-async fn image(
-    loops: bool,
-    stream: &mut [BufReader<TcpStream>],
-    img: Image,
-) -> Result<(), Box<dyn Error>> {
-    let image = image::open(img.path)?.to_rgb8();
-    let canvas_limit = size(&mut stream[0]).await?;
+async fn image(args: &Arguments, img: &Image) -> Result<(), Box<dyn Error>> {
+    let image = image::open(&img.path)?.to_rgb8();
+    let canvas_limit = size(args).await?;
     if image.width() > canvas_limit.0 || image.height() > canvas_limit.1 {
         println!("WARN: the image is over the canvas size");
     }
 
-    while loops {
-        for pxl in image.enumerate_pixels() {
-            if pxl.0 < canvas_limit.0 && pxl.1 < canvas_limit.1 {
-                let pxl = Pixel {
-                    x: pxl.0 as u16,
-                    y: pxl.1 as u16,
-                    color: format!(
-                        "{:02x?}{:02x?}{:02x?}",
-                        pxl.2 .0[0], pxl.2 .0[1], pxl.2 .0[2]
-                    ),
-                };
-                pixel(&mut stream[0], &pxl).await?;
+    // collect all pixels of image
+    let all_pixels: Vec<Pixel> = image
+        .enumerate_pixels()
+        .map(|pxl| Pixel {
+            x: pxl.0,
+            y: pxl.1,
+            color: format!(
+                "{:02x?}{:02x?}{:02x?}",
+                pxl.2 .0[0], pxl.2 .0[1], pxl.2 .0[2]
+            ),
+        })
+        .collect();
+
+    // divide pixels for threads
+    let tasks: Arc<RwLock<Vec<Vec<Pixel>>>> = Arc::new(RwLock::new(vec![]));
+    let span = all_pixels.len() / args.threads;
+    for i in 0..args.threads {
+        let pxls = &all_pixels[(span * i)..(span * (i + 1))];
+        let pxls: Vec<Pixel> = pxls
+            .iter()
+            .filter(|pxl| pxl.x < canvas_limit.0 && pxl.y < canvas_limit.1)
+            .cloned()
+            .collect();
+        tasks.write().unwrap().push(pxls);
+    }
+
+    async fn work(loops: bool, task: &Vec<Pixel>) {
+        let mut stream = BufReader::new(TcpStream::connect("localhost:1337").await.unwrap());
+        while loops {
+            for pxl in task {
+                pixel(&mut stream, pxl).await.unwrap();
             }
         }
+    }
+
+    // spawn threads that work on pixels
+    let mut handles = vec![];
+    for i in 0..args.threads {
+        let task = tasks.clone();
+        let loops = args.loops;
+        let handle = std::thread::spawn(move || {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    let task = task.read().unwrap()[i].clone();
+                    work(loops, &task).await;
+                })
+        });
+        handles.push(handle);
+    }
+    for handle in handles {
+        let _ = handle.join();
     }
 
     Ok(())
@@ -119,14 +157,12 @@ async fn pixel(stream: &mut BufReader<TcpStream>, pxl: &Pixel) -> Result<(), Box
     Ok(())
 }
 
-async fn rect(
-    loops: bool,
-    stream: &mut BufReader<TcpStream>,
-    rect: Rect,
-) -> Result<(), Box<dyn Error>> {
+async fn rect(args: &Arguments, rect: &Rect) -> Result<(), Box<dyn Error>> {
     use tokio::io::AsyncWriteExt;
 
-    while loops {
+    let mut stream = BufReader::new(TcpStream::connect(&args.domain).await?);
+
+    while args.loops {
         let pixel = String::from("PX ");
         for x in rect.start_x..rect.end_x {
             for y in rect.start_y..rect.end_y {
@@ -144,9 +180,11 @@ async fn rect(
     Ok(())
 }
 
-async fn howto(stream: &mut BufReader<TcpStream>) -> Result<(), Box<dyn Error>> {
+async fn howto(args: &Arguments) -> Result<(), Box<dyn Error>> {
     use tokio::io::AsyncBufReadExt;
     use tokio::io::AsyncWriteExt;
+
+    let mut stream = BufReader::new(TcpStream::connect(&args.domain).await?);
 
     // send HELP
     stream.write_all(b"HELP\n").await?;
@@ -159,9 +197,11 @@ async fn howto(stream: &mut BufReader<TcpStream>) -> Result<(), Box<dyn Error>> 
 }
 
 /// query the size of the pixelflut server canvas
-async fn size(stream: &mut BufReader<TcpStream>) -> Result<(u32, u32), Box<dyn Error>> {
+async fn size(args: &Arguments) -> Result<(u32, u32), Box<dyn Error>> {
     use tokio::io::AsyncBufReadExt;
     use tokio::io::AsyncWriteExt;
+
+    let mut stream = BufReader::new(TcpStream::connect(&args.domain).await?);
 
     // send SIZE
     stream.write_all(b"SIZE\n").await?;
