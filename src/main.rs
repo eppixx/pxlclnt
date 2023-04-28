@@ -148,15 +148,25 @@ async fn image(args: &Arguments, img: &Image) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// renders a single pixel
+#[inline(always)]
 async fn pixel(stream: &mut BufReader<TcpStream>, pxl: &Pixel) -> Result<(), Box<dyn Error>> {
     use tokio::io::AsyncWriteExt;
 
-    let s = format!("PX {} {} {}\n", pxl.x, pxl.y, pxl.color);
+    // pushing to String is slightly faster that format!()
+    let mut s = String::with_capacity(32);
+    s.push_str("PX ");
+    s.push_str(&pxl.x.to_string());
+    s.push(' ');
+    s.push_str(&pxl.y.to_string());
+    s.push(' ');
+    s.push_str(&pxl.color);
+    s.push('\n');
     stream.write_all(s.as_bytes()).await?;
-    // println!("{s}");
     Ok(())
 }
 
+/// renders a simple rect single threaded
 async fn rect(args: &Arguments, rect: &Rect) -> Result<(), Box<dyn Error>> {
     use tokio::io::AsyncWriteExt;
 
@@ -180,6 +190,7 @@ async fn rect(args: &Arguments, rect: &Rect) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// prints the HELP command to the pixelflut server
 async fn howto(args: &Arguments) -> Result<(), Box<dyn Error>> {
     use tokio::io::AsyncBufReadExt;
     use tokio::io::AsyncWriteExt;
