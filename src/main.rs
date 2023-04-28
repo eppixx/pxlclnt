@@ -93,8 +93,8 @@ async fn image(args: &Arguments, img: &Image) -> Result<(), Box<dyn Error>> {
     let all_pixels: Vec<Pixel> = image
         .enumerate_pixels()
         .map(|pxl| Pixel {
-            x: pxl.0,
-            y: pxl.1,
+            x: img.x + pxl.0,
+            y: img.y + pxl.1,
             color: format!(
                 "{:02x?}{:02x?}{:02x?}",
                 pxl.2 .0[0], pxl.2 .0[1], pxl.2 .0[2]
