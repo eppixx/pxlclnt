@@ -1,4 +1,5 @@
 use clap::{Args, Parser, Subcommand};
+use itertools::Itertools;
 use nom::{
     bytes::complete::{tag, take},
     sequence::{separated_pair, terminated},
@@ -44,12 +45,18 @@ pub struct Arguments {
     domain: String,
 
     /// how many threads should be used
+    /// works only with image
     #[arg(short, long)]
     threads: usize,
 
     /// should the programm loop indefinetly
     #[arg(short, long)]
     loops: bool,
+
+    /// how many commands should be send with one request
+    /// works only with image
+    #[arg(short, long)]
+    size: u32,
 }
 
 #[derive(Subcommand, Clone, Debug)]
@@ -82,7 +89,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// paints image with an offset
 async fn image(args: &Arguments, img: &Image) -> Result<(), Box<dyn Error>> {
+    //preparation from here till core loop
     let image = image::open(&img.path)?.to_rgb8();
     let canvas_limit = size(args).await?;
     if image.width() > canvas_limit.0 || image.height() > canvas_limit.1 {
@@ -103,7 +112,7 @@ async fn image(args: &Arguments, img: &Image) -> Result<(), Box<dyn Error>> {
         .collect();
 
     // divide pixels for threads
-    let tasks: Arc<RwLock<Vec<Vec<String>>>> = Arc::new(RwLock::new(vec![]));
+    let mut tasks: Vec<Vec<String>> = vec![];
     let span = all_pixels.len() / args.threads;
     for i in 0..args.threads {
         let pxls = &all_pixels[(span * i)..(span * (i + 1))];
@@ -112,8 +121,25 @@ async fn image(args: &Arguments, img: &Image) -> Result<(), Box<dyn Error>> {
             .filter(|pxl| pxl.x < canvas_limit.0 && pxl.y < canvas_limit.1)
             .map(|pxl| pxl.to_cmd())
             .collect();
-        tasks.write().unwrap().push(pxls);
+        tasks.push(pxls);
     }
+
+    // group commands
+    let spans: Vec<Vec<String>> = tasks
+        .iter()
+        .map(|span| {
+            let mut result: Vec<String> = vec![];
+            let chunks = span.iter().chunks(args.size as usize);
+            chunks.into_iter().for_each(|c| {
+                let mut cmd = String::new();
+                for i in c {
+                    cmd = format!("{}{}", cmd, i);
+                }
+                result.push(cmd);
+            });
+            result
+        })
+        .collect();
 
     async fn work(loops: bool, task: &Vec<String>) {
         let mut stream = BufReader::new(TcpStream::connect("localhost:1337").await.unwrap());
@@ -124,7 +150,9 @@ async fn image(args: &Arguments, img: &Image) -> Result<(), Box<dyn Error>> {
         }
     }
 
+    // core loop
     // spawn threads that work on pixels
+    let tasks = Arc::new(RwLock::new(spans));
     let mut handles = vec![];
     for i in 0..args.threads {
         let task = tasks.clone();
@@ -141,6 +169,7 @@ async fn image(args: &Arguments, img: &Image) -> Result<(), Box<dyn Error>> {
         });
         handles.push(handle);
     }
+    // wait for threads to end
     for handle in handles {
         let _ = handle.join();
     }
@@ -151,6 +180,8 @@ async fn image(args: &Arguments, img: &Image) -> Result<(), Box<dyn Error>> {
 /// renders a single pixel
 #[inline(always)]
 async fn pixel(stream: &mut BufReader<TcpStream>, cmd: &str) -> Result<(), Box<dyn Error>> {
+    // format "PX x y colorInHex"
+    // some server also allow alpha channel in the color
     stream.write_all(cmd.as_bytes()).await?;
     Ok(())
 }
