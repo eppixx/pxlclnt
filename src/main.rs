@@ -95,7 +95,7 @@ async fn image(args: &Arguments, img: &Image) -> Result<(), Box<dyn Error>> {
     let image = image::open(&img.path)?.to_rgb8();
     let canvas_limit = size(args).await?;
     if image.width() > canvas_limit.0 || image.height() > canvas_limit.1 {
-        println!("WARN: the image is over the canvas size");
+        println!("WARN: image is bigger than canvas size");
     }
 
     // collect all pixels of image
@@ -125,7 +125,7 @@ async fn image(args: &Arguments, img: &Image) -> Result<(), Box<dyn Error>> {
     }
 
     // group commands
-    let spans: Vec<Vec<String>> = tasks
+    let groups: Vec<Vec<String>> = tasks
         .iter()
         .map(|span| {
             let mut result: Vec<String> = vec![];
@@ -141,8 +141,8 @@ async fn image(args: &Arguments, img: &Image) -> Result<(), Box<dyn Error>> {
         })
         .collect();
 
-    async fn work(loops: bool, task: &Vec<String>) {
-        let mut stream = BufReader::new(TcpStream::connect("localhost:1337").await.unwrap());
+    async fn work(domain: &str, loops: bool, task: &Vec<String>) {
+        let mut stream = BufReader::new(TcpStream::connect(domain).await.unwrap());
         while loops {
             for pxl in task {
                 pixel(&mut stream, pxl).await.unwrap();
@@ -152,11 +152,12 @@ async fn image(args: &Arguments, img: &Image) -> Result<(), Box<dyn Error>> {
 
     // core loop
     // spawn threads that work on pixels
-    let tasks = Arc::new(RwLock::new(spans));
+    let tasks = Arc::new(RwLock::new(groups));
     let mut handles = vec![];
     for i in 0..args.threads {
         let task = tasks.clone();
         let loops = args.loops;
+				let domain = args.domain.clone();
         let handle = std::thread::spawn(move || {
             tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -164,7 +165,7 @@ async fn image(args: &Arguments, img: &Image) -> Result<(), Box<dyn Error>> {
                 .unwrap()
                 .block_on(async {
                     let task = task.read().unwrap()[i].clone();
-                    work(loops, &task).await;
+                    work(&domain, loops, &task).await;
                 })
         });
         handles.push(handle);
