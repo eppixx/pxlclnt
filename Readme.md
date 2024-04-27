@@ -1,6 +1,6 @@
 # pxlclnt
 
-This is a client for a (Pixelflut)[https://wiki.cccgoe.de/wiki/Pixelflut] server. On my local server it manages to send up to 40Gb per second which is more than most network connections are capable of receiving.
+This is a client for a [Pixelflut](https://wiki.cccgoe.de/wiki/Pixelflut) server. On my local server it manages to send up to 40Gb per second which is more than most network connections are capable of receiving.
 
 ## Compilation
 
