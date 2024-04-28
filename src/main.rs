@@ -57,6 +57,12 @@ pub struct Arguments {
     /// works only with image
     #[arg(short, long)]
     size: u32,
+
+    /// give the size of the canvas if size is not supported
+    #[arg(long)]
+    canvas_x: Option<u32>,
+    #[arg(log)]
+    canvas_y: Option<u32>,
 }
 
 #[derive(Subcommand, Clone, Debug)]
@@ -234,6 +240,10 @@ async fn howto(args: &Arguments) -> Result<(), Box<dyn Error>> {
 
 /// query the size of the pixelflut server canvas
 async fn size(args: &Arguments) -> Result<(u32, u32), Box<dyn Error>> {
+    if let (Some(x), Some(y)) = (args.canvas_x, args.canvas_y) {
+        return Ok((x, y));
+    }
+
     let mut stream = BufReader::new(TcpStream::connect(&args.domain).await?);
 
     // send SIZE
