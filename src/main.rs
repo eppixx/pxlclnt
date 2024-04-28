@@ -149,6 +149,7 @@ async fn image(args: &Arguments, img: &Image) -> Result<(), Box<dyn Error>> {
 
     async fn work(domain: &str, loops: bool, task: &Vec<String>) {
         let mut stream = BufReader::new(TcpStream::connect(domain).await.unwrap());
+        #[allow(clippy::while_immutable_condition)]
         while loops {
             for pxl in task {
                 pixel(&mut stream, pxl).await.unwrap();
@@ -197,6 +198,7 @@ async fn pixel(stream: &mut BufReader<TcpStream>, cmd: &str) -> Result<(), Box<d
 async fn rect(args: &Arguments, rect: &Rect) -> Result<(), Box<dyn Error>> {
     let mut stream = BufReader::new(TcpStream::connect(&args.domain).await?);
 
+    #[allow(clippy::while_immutable_condition)]
     while args.loops {
         let pixel = String::from("PX ");
         for x in rect.start_x..rect.end_x {
