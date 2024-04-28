@@ -1,10 +1,5 @@
 use clap::{Args, Parser, Subcommand};
 use itertools::Itertools;
-use nom::{
-    bytes::complete::{tag, take},
-    sequence::{separated_pair, terminated},
-    IResult,
-};
 use std::{
     error::Error,
     path::PathBuf,
@@ -61,7 +56,7 @@ pub struct Arguments {
     /// give the size of the canvas if size is not supported
     #[arg(long)]
     canvas_x: Option<u32>,
-    #[arg(log)]
+    #[arg(long)]
     canvas_y: Option<u32>,
 }
 
@@ -253,12 +248,17 @@ async fn size(args: &Arguments) -> Result<(u32, u32), Box<dyn Error>> {
     let mut buffer = String::with_capacity(32);
     stream.read_line(&mut buffer).await?;
 
-    fn parse(input: &str) -> IResult<&str, (u32, u32)> {
+    fn parse(input: &str) -> nom::IResult<&str, (u32, u32)> {
+        use nom::{
+            bytes::complete::take,
+            character::complete,
+            sequence::{separated_pair, terminated},
+        };
         let (rest, _) = take(5u8)(input)?;
         let (rest, parsed) = separated_pair(
-            nom::character::complete::u32,
-            tag(" "),
-            terminated(nom::character::complete::u32, tag("\r\n")),
+            complete::u32,
+            complete::space1,
+            terminated(complete::u32, complete::newline),
         )(rest)?;
         Ok((rest, parsed))
     }
