@@ -80,7 +80,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
         Command::Pixel(pxl) => {
             let mut stream = BufReader::new(TcpStream::connect(&args.domain).await?);
-            pixel(&mut stream, &pxl.to_cmd()).await?;
+            if args.loops {
+                loop {
+                    pixel(&mut stream, &pxl.to_cmd()).await?;
+                }
+            } else {
+                pixel(&mut stream, &pxl.to_cmd()).await?;
+            }
         }
         Command::Rect(ref rct) => rect(&args, rct).await?,
         Command::Image(ref img) => image(&args, img).await?,
